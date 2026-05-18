@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # ============================================================
+  # BASE DE DATOS MySQL
+  # ============================================================
+  db-despachos:
+    image: mysql:8.0
+    container_name: mysql_despachos
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}       # Contraseña del usuario root
+      MYSQL_DATABASE: ${DB_NAME}                 # Crea esta base de datos automáticamente
+      MYSQL_USER: ${DB_USERNAME}                 # Usuario de la aplicación
+      MYSQL_PASSWORD: ${DB_PASSWORD}             # Contraseña del usuario de la app
+    volumes:
+      # NAMED VOLUME: Docker gestiona dónde se guardan los datos en el host
+      # Los datos persisten aunque el contenedor se elimine o reinicie
+      # Alternativa seria: ./data:/var/lib/mysql (bind mount, menos portable)
+      - despachos_db_data:/var/lib/mysql
+    networks:
+      - backend_network
+    healthcheck:
+      # Espera a que MySQL esté listo antes de iniciar el backend
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ============================================================
+  # BACKEND Spring Boot
+  # ============================================================
+  backend-despachos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: backend_despachos
+    restart: unless-stopped
+    ports:
+      - "8081:8081"     # Puerto 8081 del host → Puerto 8081 del contenedor
+    environment:
+      # El backend usa el NOMBRE DEL SERVICIO 'db-despachos' como hostname
+      # Docker tiene DNS interno que resuelve el nombre a la IP del contenedor
+      # NUNCA usamos una IP hardcodeada porque puede cambiar
+      DB_ENDPOINT: db-despachos
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      db-despachos:
+        condition: service_healthy    # Espera a que MySQL esté listo y sano
+    networks:
+      - backend_network
+
+# ============================================================
+# REDES
+# ============================================================
+networks:
+  backend_network:
+    driver: bridge    # Red interna de Docker, aislada del exterior
+
+# ============================================================
+# VOLÚMENES
+# ============================================================
+volumes:
+  # Named volume gestionado por Docker
+  # docker volume ls → muestra este volumen
+  # docker volume inspect despachos_db_data → muestra dónde están los datos
+  # Los datos sobreviven a: docker-compose down, docker restart, borrar contenedor
+  despachos_db_data:

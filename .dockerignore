@@ -1,0 +1,25 @@
+# Excluir del contexto de build de Docker
+
+# Directorio target (JARs compilados localmente)
+target/
+
+# Archivos de entorno con credenciales
+.env
+.env.local
+
+# Control de versiones
+.git
+.gitignore
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.class
+
+# Logs
+*.log
+
+# Documentación
+README.md
+*.md
