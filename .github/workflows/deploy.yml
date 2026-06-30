@@ -1,93 +1,43 @@
-name: CI/CD - Backend Despachos
+name: Deploy Backend to ECS
 
-# El pipeline se activa SOLO cuando hay push en la rama 'deploy'
 on:
   push:
-    branches:
-      - deploy
+    branches: [deploy]
 
 jobs:
-  build-and-deploy:
-    name: Build, Push y Deploy
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # PASO 1: Descargar el código
-      - name: Checkout del código
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # PASO 2: Configurar Java 21 (mismo que usa el Dockerfile)
-      - name: Configurar Java 21
-        uses: actions/setup-java@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      # PASO 3: Cache de dependencias Maven
-      # Evita descargar ~200MB de dependencias en cada ejecución del pipeline
-      - name: Cache de dependencias Maven
-        uses: actions/cache@v3
-        with:
-          path: ~/.m2
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-maven-
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      # PASO 4: Compilar y ejecutar tests con Maven
-      # A diferencia del Dockerfile (-DskipTests), aquí SÍ se ejecutan los tests
-      # Esto garantiza que el código funciona antes de construir la imagen
-      - name: Compilar y ejecutar tests
-        run: mvn clean verify -B
+      - name: Build, tag and push image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/backend-despachos:latest \
+            -t $ECR_REGISTRY/backend-despachos:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/backend-despachos:latest
+          docker push $ECR_REGISTRY/backend-despachos:$IMAGE_TAG
 
-      # PASO 5: Login en Docker Hub
-      - name: Login en Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # PASO 6: Build y Push de la imagen Docker
-      # Tag 'latest' + tag con SHA del commit para trazabilidad y rollback
-      - name: Build y Push de la imagen Docker
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/backend-despachos:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/backend-despachos:${{ github.sha }}
-
-      # PASO 7: Deploy en EC2 por SSH
-      - name: Deploy en EC2 Backend
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_BACKEND_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            # Crear el archivo .env con los secrets (en el servidor, no en el código)
-            cat > /home/ec2-user/.env << EOF
-            DB_NAME=${{ secrets.DB_NAME }}
-            DB_USERNAME=${{ secrets.DB_USERNAME }}
-            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-            EOF
-
-            # Descargar la nueva imagen
-            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/backend-despachos:latest
-
-            # Detener contenedores anteriores
-            docker stop backend_despachos mysql_despachos || true
-            docker rm backend_despachos mysql_despachos || true
-
-            # Levantar con docker-compose usando el .env
-            cd /home/ec2-user
-            # Copiar docker-compose.yml si no existe
-            curl -o docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/deploy/docker-compose.yml
-
-            # Actualizar la imagen en docker-compose y levantar
-            docker-compose --env-file .env up -d
-
-            # Limpiar imágenes antiguas
-            docker image prune -f
-
-            echo "Deploy completado: $(date)"
-            docker ps
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster innovatech-cluster \
+            --service backend-service \
+            --force-new-deployment
